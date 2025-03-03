@@ -13,7 +13,7 @@
 # Copyright (c) 2016 Steveis <SteveAmor@users.noreply.github.com>
 #
 # SPDX-License-Identifier: BSD-3-Clause
-
+import sys
 import warnings
 from time import sleep
 from threading import Event, Lock
@@ -28,7 +28,7 @@ from .exc import (
     PWMSoftwareFallback,
 )
 from .devices import GPIODevice, CompositeDevice
-from .mixins import GPIOQueue, EventsMixin, HoldMixin, event
+from .mixins import GPIOQueue, GPIODataWindow, EventsMixin, HoldMixin, event
 try:
     from .pins.pigpio import PiGPIOFactory
 except ImportError:
@@ -1369,3 +1369,192 @@ class RotaryEncoder(EventsMixin, CompositeDevice):
         beyond their limits.
         """
         return self._wrap
+
+
+class UltrasonicSensor(EventsMixin, InputDevice):
+    """
+    Represents an HC-SR04 ultrasonic sensor but unlike
+    :class:`DistanceSensor` this class extends :class:`InputDevice`
+    and captures the full window of data rather than using a
+    :class:`GPIOQueue`.
+
+    The following code will periodically report the ultrasound value captured by the
+    sensor assuming the TRIG pin is connected to GPIO17, and the ECHO
+    pin to GPIO18::
+
+        from gpiozero import UltrasonicSensor
+        from time import sleep
+
+        sensor = UltrasonicSensor(echo=18, trigger=17)
+        while True:
+            print('Value: ', sensor.value)
+            sleep(0.1)
+
+    .. note::
+
+        For improved accuracy, use the pigpio pin driver rather than the default
+        RPi.GPIO driver (pigpio uses DMA sampling for much more precise edge
+        timing). This is particularly relevant if you're using Pi 1 or Pi Zero.
+        See :ref:`changing-pin-factory` for further information.
+
+    :param int data_frame_length:
+        The length of data frames filled by the background thread.
+
+    :param float sample_wait:
+        The length of time to wait between retrieving the state of the
+        underlying device. Defaults to 0.0 indicating that values are retrieved
+        as fast as possible.
+
+    :type echo: int or str
+    :param echo:
+        The GPIO pin which the ECHO pin is connected to. See
+        :ref:`pin-numbering` for valid pin numbers. If this is :data:`None` a
+        :exc:`GPIODeviceError` will be raised.
+
+    :type trigger: int or str
+    :param trigger:
+        The GPIO pin which the TRIG pin is connected to. See
+        :ref:`pin-numbering` for valid pin numbers. If this is :data:`None` a
+        :exc:`GPIODeviceError` will be raised.
+
+    :type pin_factory: Factory or None
+    :param pin_factory:
+        See :doc:`api_pins` for more information (this is an advanced feature
+        which most users can ignore).
+    """
+    ECHO_LOCK = Lock()
+
+    def __init__(
+            self, echo=None, trigger=None, *, pin=None, pull_up=False, active_state=None,
+            data_frame_length=GPIODataWindow.DEFAULT_FRAME_LENGTH, sample_wait=0.07, pin_factory=None):
+
+        self._queue = None
+        super().__init__(
+            pin, pull_up=pull_up, active_state=active_state,
+            pin_factory=pin_factory)
+        try:
+            self._queue = GPIODataWindow(self, data_frame_length, sample_wait)
+        except:
+            self.close()
+            raise
+
+        self._trigger = None
+        try:
+            self.speed_of_sound = 343.26 # m/s
+            self._trigger = GPIODevice(trigger, pin_factory=pin_factory)
+            self._echo = Event()
+            self._echo_rise = None
+            self._echo_fall = None
+            self._trigger.pin.function = 'output'
+            self._trigger.pin.state = False
+            self.pin.edges = 'both'
+            self.pin.bounce = None
+            self.pin.when_changed = self._echo_changed
+            self._queue.start()
+        except:
+            self.close()
+            raise
+
+        if PiGPIOFactory is None or not isinstance(self.pin_factory, PiGPIOFactory):
+            warnings.warn(PWMSoftwareFallback(
+                'For more accurate readings, use the pigpio pin factory.'
+                'See https://gpiozero.readthedocs.io/en/stable/api_input.html#distancesensor-hc-sr04 for more info'
+            ))
+
+    def close(self):
+        try:
+            self._trigger.close()
+        except AttributeError:
+            pass
+        self._trigger = None
+        super().close()
+
+    @property
+    def value(self):
+        """
+        Returns a :class:`pandas.DataFrame` with the current data window (up to data_frame_length).
+        """
+        self._check_open()
+        return self._queue.value
+
+    @property
+    def history(self):
+        """
+        Returns a list of :class:`pandas.DataFrame` of length `data_frame_length` with the series of DataFrames up to now, does not include the last "value" if the current window hasn't been filled.
+        """
+        self._check_open()
+        return self._queue.history
+
+    @property
+    def trigger(self):
+        """
+        Returns the :class:`Pin` that the sensor's trigger is connected to.
+        """
+        return self._trigger.pin
+
+    @property
+    def echo(self):
+        """
+        Returns the :class:`Pin` that the sensor's echo is connected to. This
+        is simply an alias for the usual :attr:`~GPIODevice.pin` attribute.
+        """
+        return self.pin
+
+    def _echo_changed(self, ticks, level):
+        if level:
+            self._echo_rise = ticks
+        else:
+            self._echo_fall = ticks
+            self._echo.set()
+
+    def _read(self):
+        # Wait up to 50ms for the echo pin to fall to low (the maximum echo
+        # pulse is 35ms so this gives some leeway); if it doesn't something is
+        # horribly wrong (most likely at the hardware level)
+        if self.pin.state:
+            wait = 0.05
+            if not self._echo.wait(wait):
+                sys.stderr.write(f'echo pin set did not lower within {wait * 1000}ms')
+                return None
+
+        self._echo.clear()
+        self._echo_fall = None
+        self._echo_rise = None
+        # Obtain the class-level ECHO_LOCK to ensure multiple ultrasonic sensors
+        # don't listen for each other's "pings"
+        with UltrasonicSensor.ECHO_LOCK:
+            # Fire the trigger
+            self._trigger.pin.state = True
+            sleep(0.00001)
+            self._trigger.pin.state = False
+            # Wait up to 70ms for the echo pin to rise and fall (35ms is the
+            # maximum pulse time, but the pre-rise time is unspecified in the
+            # "datasheet"; 70ms seems sufficiently long to conclude something
+            # has failed)
+            wait = 0.07
+            if self._echo.wait(wait):
+                if self._echo_fall is not None and self._echo_rise is not None:
+                    value = (
+                        self.pin_factory.ticks_diff(
+                            self._echo_fall, self._echo_rise) *
+                        self.speed_of_sound / 2.0)
+                    return value
+                else:
+                    # If we only saw the falling edge it means we missed
+                    # the echo because it was too fast
+                    return None
+            else:
+                # The echo pin never rose or fell; something's gone horribly
+                # wrong
+                sys.stderr.write(f'no echo received within {wait * 1000}ms')
+
+                return None
+
+    @property
+    def in_range(self):
+        return not self.is_active
+
+UltrasonicSensor.when_out_of_range = UltrasonicSensor.when_activated
+UltrasonicSensor.when_in_range = UltrasonicSensor.when_deactivated
+UltrasonicSensor.wait_for_out_of_range = UltrasonicSensor.wait_for_active
+UltrasonicSensor.wait_for_in_range = UltrasonicSensor.wait_for_inactive

@@ -9,9 +9,13 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+import time
 import inspect
 import weakref
 import warnings
+import pandas
+from copy import deepcopy
+from datetime import datetime, UTC
 from functools import wraps, partial
 from threading import Event
 from collections import deque
@@ -583,6 +587,71 @@ class GPIOQueue(GPIOThread):
                     self.full.set()
                 if (self.partial or self.full.is_set()) and isinstance(self.parent, EventsMixin):
                     self.parent._fire_events(self.parent.pin_factory.ticks(), self.parent.is_active)
+        except ReferenceError:
+            # Parent is dead; time to die!
+            pass
+
+
+class GPIODataWindow(GPIOThread):
+    """
+    Extends :class:`GPIOThread`. Provides a background thread that monitors a
+    device's values and provides a :class:`pandas.core.arrays.floating.FloatingArray`
+    with the full window of data presently captured.
+
+    If the *parent* device includes the :class:`EventsMixin` in
+    its ancestry, the thread automatically calls
+    :meth:`~EventsMixin._fire_events`.
+    """
+    DEFAULT_FRAME_LENGTH = 100000
+    def __init__(
+            self, parent, data_frame_length=DEFAULT_FRAME_LENGTH, sample_wait=0.0):
+
+        if data_frame_length < 1:
+            raise BadQueueLen('data_frame_length must be at least one')
+
+        if sample_wait < 0:
+            raise BadWaitTime('sample_wait must be 0 or greater')
+
+        super().__init__(target=self.fill)
+        self.max_length = data_frame_length
+        self.data = []
+        self.data_frames = []
+        self.sample_wait = float(sample_wait)
+        self.full = Event()
+        self.parent = weakref.proxy(parent)
+
+    @property
+    def value(self):
+        return pandas.DataFrame(self.data)
+
+    @property
+    def history(self):
+        return deepcopy(self.data_frames)
+
+    def read_datapoint(self) -> pandas.Series:
+        timestamp = pandas.Timestamp(datetime.now(UTC))
+        pulse_reading = self.parent._read()
+        return pandas.Series(dict(reat_at=timestamp, reading=pulse_reading))
+
+    def fill(self):
+        try:
+            while not self.stopping.wait(self.sample_wait):
+                point = self.read_datapoint()
+
+                is_full = len(self.data) >= self.max_length
+                if is_full:
+                    frame = pandas.DataFrame(self.data, columns=("read_at", "reading"))
+                    self.data_frames.append(frame)
+                    self.data = []
+
+                self.data.append(point)
+
+                if is_full and not self.full.is_set():
+                    self.full.set()
+
+                if self.full.is_set() and isinstance(self.parent, EventsMixin):
+                    self.parent._fire_events(self.parent.pin_factory.ticks(), self.parent.is_active)
+
         except ReferenceError:
             # Parent is dead; time to die!
             pass

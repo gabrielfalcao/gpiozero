@@ -52,6 +52,7 @@ from .input_devices import (
     LineSensor,
     MotionSensor,
     LightSensor,
+    UltrasonicSensor,
     DistanceSensor,
     RotaryEncoder,
 )
