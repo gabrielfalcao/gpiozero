@@ -1,0 +1,67 @@
+[project]
+name = "gpiozero"
+description = "A simple interface to GPIO devices with Raspberry Pi"
+keywords = ["raspberrypi gpio"]
+version = "2.0.1"
+readme = "README.rst"
+authors = [
+    {name = "Ben Nuttall", email = "ben@bennuttall.com"},
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "Topic :: Education",
+    "Topic :: System :: Hardware",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "colorzero",
+    "importlib_metadata~=4.6;python_version<'3.10'",
+    "importlib_resources~=5.0;python_version<'3.10'",
+    "numpy>=2.0.2",
+    "pandas>=2.2.3",
+]
+license = {text = "BSD-3-Clause"}
+
+[project.urls]
+Homepage = "https://gpiozero.readthedocs.io/"
+Documentation = "https://gpiozero.readthedocs.io/"
+"Source Code" = "https://github.com/gpiozero/gpiozero"
+"Issue Tracker" = "https://github.com/gpiozero/gpiozero/issues"
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+doc = [
+    "sphinx-rtd-theme>=1.0",
+    "sphinx>=4.0",
+]
+
+[project.scripts]
+pinout = "gpiozerocli.pinout:main"
+pintest = "gpiozerocli.pintest:main"
+
+[project.entry-points.gpiozero_mock_pin_classes]
+mockchargingpin = "gpiozero.pins.mock:MockChargingPin"
+mockpin = "gpiozero.pins.mock:MockPin"
+mockpwmpin = "gpiozero.pins.mock:MockPWMPin"
+mocktriggerpin = "gpiozero.pins.mock:MockTriggerPin"
+
+[project.entry-points.gpiozero_pin_factories]
+lgpio = "gpiozero.pins.lgpio:LGPIOFactory"
+mock = "gpiozero.pins.mock:MockFactory"
+native = "gpiozero.pins.native:NativeFactory"
+pigpio = "gpiozero.pins.pigpio:PiGPIOFactory"
+rpigpio = "gpiozero.pins.rpigpio:RPiGPIOFactory"
+
+[tool.uv]
+package = true
