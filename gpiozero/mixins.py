@@ -13,13 +13,15 @@ import time
 import inspect
 import weakref
 import warnings
-import pandas
 from copy import deepcopy
 from datetime import datetime, UTC
 from functools import wraps, partial
 from threading import Event
+from typing import Dict, List, Tuple
 from collections import deque
 from statistics import median
+
+import pandas
 
 from .threads import GPIOThread
 from .exc import (
@@ -621,17 +623,17 @@ class GPIODataWindow(GPIOThread):
         self.parent = weakref.proxy(parent)
 
     @property
-    def value(self):
-        return pandas.DataFrame(self.data)
+    def value(self) -> List[Tuple[float, float]]:
+        return self.data
 
     @property
-    def history(self):
+    def history(self) -> List[pandas.DataFrame]:
         return deepcopy(self.data_frames)
 
-    def read_datapoint(self) -> pandas.Series:
+    def read_datapoint(self) -> Tuple[float, float]:
         timestamp = pandas.Timestamp(datetime.now(UTC))
         pulse_reading = self.parent._read()
-        return pandas.Series(dict(reat_at=timestamp, reading=pulse_reading))
+        return (time.time(), pulse_reading)
 
     def fill(self):
         try:
