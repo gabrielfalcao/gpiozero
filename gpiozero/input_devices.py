@@ -18,7 +18,11 @@ import warnings
 from time import sleep
 from threading import Event, Lock
 from itertools import tee
+from collections import defaultdict
 from statistics import median, mean
+from typing import Dict, List, Tuple
+
+import pandas
 
 from .exc import (
     InputDeviceError,
@@ -1425,22 +1429,24 @@ class UltrasonicSensor(EventsMixin, InputDevice):
     ECHO_LOCK = Lock()
 
     def __init__(
-            self, echo=None, trigger=None, *, pin=None, pull_up=False, active_state=None,
+            self, echo=None, trigger=None, *, pull_up=False, active_state=None,
             data_frame_length=GPIODataWindow.DEFAULT_FRAME_LENGTH, sample_wait=0.07, pin_factory=None):
 
-        self._queue = None
+        pin = echo
+        self.data_window = None
+        self.data_frame_length = data_frame_length
         super().__init__(
-            pin, pull_up=pull_up, active_state=active_state,
+            pin=pin, pull_up=pull_up, active_state=active_state,
             pin_factory=pin_factory)
+
         try:
-            self._queue = GPIODataWindow(self, data_frame_length, sample_wait)
+            self.data_window = GPIODataWindow(self, data_frame_length, sample_wait)
         except:
             self.close()
             raise
 
         self._trigger = None
         try:
-            self.speed_of_sound = 343.26 # m/s
             self._trigger = GPIODevice(trigger, pin_factory=pin_factory)
             self._echo = Event()
             self._echo_rise = None
@@ -1450,7 +1456,7 @@ class UltrasonicSensor(EventsMixin, InputDevice):
             self.pin.edges = 'both'
             self.pin.bounce = None
             self.pin.when_changed = self._echo_changed
-            self._queue.start()
+            self.data_window.start()
         except:
             self.close()
             raise
@@ -1470,20 +1476,43 @@ class UltrasonicSensor(EventsMixin, InputDevice):
         super().close()
 
     @property
-    def value(self):
+    def value(self) -> Tuple[float, float]:
         """
-        Returns a :class:`pandas.DataFrame` with the current data window (up to data_frame_length).
+        Returns ``timestamp, value`` tuple
         """
         self._check_open()
-        return self._queue.value
+        return self.data_window.value
 
     @property
-    def history(self):
+    def values_by_timestamp_nanos(self) -> Dict[float, List[float]]:
         """
-        Returns a list of :class:`pandas.DataFrame` of length `data_frame_length` with the series of DataFrames up to now, does not include the last "value" if the current window hasn't been filled.
+        Returns ``Dict[float, List[float]]`` timestamp and values list
+        """
+        values = defaultdict(list)
+        for timestamp, value in self.value:
+            if value is not None:
+                values[timestamp].append(value)
+
+        return values
+
+    @property
+    def values_by_timestamp(self) -> Dict[int, List[float]]:
+        """
+        Returns ``Dict[int, List[float]]`` timestamp and values list
+        """
+        values = defaultdict(list)
+        for timestamp, value in self.value:
+            values[int(timestamp)].append(value)
+
+        return values
+
+    @property
+    def history(self) -> List[pandas.DataFrame]:
+        """
+        Returns :class:`pandas.DataFrame` list of of length ``data_frame_length`` with the series of DataFrames up to now, does not include the last "value" if the current window hasn't been filled.
         """
         self._check_open()
-        return self._queue.history
+        return self.data_window.history
 
     @property
     def trigger(self):
@@ -1534,10 +1563,10 @@ class UltrasonicSensor(EventsMixin, InputDevice):
             wait = 0.07
             if self._echo.wait(wait):
                 if self._echo_fall is not None and self._echo_rise is not None:
-                    value = (
-                        self.pin_factory.ticks_diff(
-                            self._echo_fall, self._echo_rise) *
-                        self.speed_of_sound / 2.0)
+                    value = self.pin_factory.ticks_diff(
+                        self._echo_fall,
+                        self._echo_rise,
+                    )
                     return value
                 else:
                     # If we only saw the falling edge it means we missed
