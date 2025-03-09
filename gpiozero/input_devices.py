@@ -32,7 +32,7 @@ from .exc import (
     PWMSoftwareFallback,
 )
 from .devices import GPIODevice, CompositeDevice
-from .mixins import GPIOQueue, GPIODataWindow, EventsMixin, HoldMixin, event
+from .mixins import GPIOQueue, GPIODataWindow, EventsMixin, HoldMixin, event, UniqueAppendList
 try:
     from .pins.pigpio import PiGPIOFactory
 except ImportError:
@@ -1429,7 +1429,7 @@ class UltrasonicSensor(EventsMixin, InputDevice):
     ECHO_LOCK = Lock()
 
     def __init__(
-            self, echo=None, trigger=None, *, pull_up=False, active_state=None,
+            self, echo=None, trigger=None, callback=None, *, pull_up=False, active_state=None,
             data_frame_length=GPIODataWindow.DEFAULT_FRAME_LENGTH, sample_wait=0.07, pin_factory=None):
 
         pin = echo
@@ -1440,7 +1440,7 @@ class UltrasonicSensor(EventsMixin, InputDevice):
             pin_factory=pin_factory)
 
         try:
-            self.data_window = GPIODataWindow(self, data_frame_length, sample_wait)
+            self.data_window = GPIODataWindow(self, data_frame_length, sample_wait, callback=callback)
         except:
             self.close()
             raise
@@ -1488,10 +1488,11 @@ class UltrasonicSensor(EventsMixin, InputDevice):
         """
         Returns ``Dict[float, List[float]]`` timestamp and values list
         """
-        values = defaultdict(list)
+        values = defaultdict(UniqueAppendList)
         for timestamp, value in self.value:
             if value is not None:
-                values[timestamp].append(value)
+                if value not in values[timestamp]:
+                    values[timestamp].append(value)
 
         return values
 
@@ -1500,9 +1501,11 @@ class UltrasonicSensor(EventsMixin, InputDevice):
         """
         Returns ``Dict[int, List[float]]`` timestamp and values list
         """
-        values = defaultdict(list)
+        values = defaultdict(UniqueAppendList)
         for timestamp, value in self.value:
-            values[int(timestamp)].append(value)
+            if value is not None:
+                if value not in values[int(timestamp)]:
+                    values[int(timestamp)].append(value)
 
         return values
 

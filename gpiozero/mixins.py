@@ -13,6 +13,7 @@ import time
 import inspect
 import weakref
 import warnings
+import logging
 from copy import deepcopy
 from datetime import datetime, UTC
 from functools import wraps, partial
@@ -36,7 +37,13 @@ callback_warning = (
     'The callback was set to None. This may have been unintentional '
     'e.g. btn.when_pressed = pressed() instead of btn.when_pressed = pressed'
 )
+logging.basicConfig(filename=f'{__name__}.log', level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
+handler = logging.StreamHandler()
+handler.setLevel(logging.DEBUG)
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+logger.addHandler(handler)
 
 class ValuesMixin:
     """
@@ -604,9 +611,9 @@ class GPIODataWindow(GPIOThread):
     its ancestry, the thread automatically calls
     :meth:`~EventsMixin._fire_events`.
     """
-    DEFAULT_FRAME_LENGTH = 100000
+    DEFAULT_FRAME_LENGTH = 10000
     def __init__(
-            self, parent, data_frame_length=DEFAULT_FRAME_LENGTH, sample_wait=0.0):
+            self, parent, data_frame_length=DEFAULT_FRAME_LENGTH, sample_wait=0.0, callback=None):
 
         if data_frame_length < 1:
             raise BadQueueLen('data_frame_length must be at least one')
@@ -616,15 +623,17 @@ class GPIODataWindow(GPIOThread):
 
         super().__init__(target=self.fill)
         self.max_length = data_frame_length
-        self.data = []
-        self.data_frames = []
+        self.data = deque(maxlen=data_frame_length)
+        self.data_frames = deque()
         self.sample_wait = float(sample_wait)
         self.full = Event()
         self.parent = weakref.proxy(parent)
-
+        self.callback = callback
+        self.has_data = False
     @property
-    def value(self) -> List[Tuple[float, float]]:
-        return self.data
+    def value(self) -> deque[Tuple[float, float]]:
+        if self.has_data:
+            return self.data[-1]
 
     @property
     def history(self) -> List[pandas.DataFrame]:
@@ -640,20 +649,34 @@ class GPIODataWindow(GPIOThread):
             while not self.stopping.wait(self.sample_wait):
                 point = self.read_datapoint()
 
+                if callable(self.callback):
+                    try:
+                        self.callback(point)
+                    except Exception:
+                        logger.exception(f"failed to execute callback with data point {point}")
+
                 is_full = len(self.data) >= self.max_length
-                if is_full:
-                    frame = pandas.DataFrame(self.data, columns=("read_at", "reading"))
-                    self.data_frames.append(frame)
-                    self.data = []
-
-                self.data.append(point)
-
                 if is_full and not self.full.is_set():
                     self.full.set()
 
                 if self.full.is_set() and isinstance(self.parent, EventsMixin):
                     self.parent._fire_events(self.parent.pin_factory.ticks(), self.parent.is_active)
 
+                    frame = pandas.DataFrame(self.data, columns=("read_at", "reading"))
+                    self.data_frames.append(frame)
+                    self.data = deque(maxlen=self.data_frame_length)
+
+                if not self.has_data:
+                    self.has_data = True
+                self.data.append(point)
+
         except ReferenceError:
-            # Parent is dead; time to die!
-            pass
+            logger.exception("error filling queue within GPIODataWindow")
+
+
+
+class UniqueAppendList(list):
+    def append(self, data):
+        items = set(self)
+        if data not in items:
+            super().append(data)
